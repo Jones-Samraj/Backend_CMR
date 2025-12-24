@@ -14,12 +14,12 @@ const pool = mysql.createPool({
 // Promisify for async/await usage
 const promisePool = pool.promise();
 
-// Test connection
+// Test connection once at startup for clearer logs
 pool.getConnection((err, connection) => {
   if (err) {
-    console.error("Database connection failed:", err.message);
+    console.error("[DB] Database connection failed:", err.message);
   } else {
-    console.log("Database connected successfully!");
+    console.log("[DB] Database connected successfully!");
     connection.release();
   }
 });
