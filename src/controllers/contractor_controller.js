@@ -80,10 +80,56 @@ exports.updateJobStatus = async (req, res) => {
       );
     }
 
-    res.json({ message: "Job status updated successfully" });
+    res.json({ success: true, message: "Job status updated successfully" });
   } catch (error) {
     console.error("Update job error:", error);
     res.status(500).json({ message: "Failed to update job", error: error.message });
+  }
+};
+
+// Reject/delete a job assignment
+exports.rejectJob = async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { reason } = req.body;
+
+    // Verify contractor owns this job
+    const [contractors] = await db.promise().query(
+      "SELECT id FROM contractors WHERE user_id = ?",
+      [req.user.id]
+    );
+
+    if (contractors.length === 0) {
+      return res.status(404).json({ message: "Contractor profile not found" });
+    }
+
+    const [jobs] = await db.promise().query(
+      "SELECT * FROM work_assignments WHERE id = ? AND contractor_id = ?",
+      [jobId, contractors[0].id]
+    );
+
+    if (jobs.length === 0) {
+      return res.status(404).json({ message: "Job not found" });
+    }
+
+    // Update aggregated_location status back to pending
+    await db.promise().query(
+      "UPDATE aggregated_locations SET status = 'pending' WHERE id = ?",
+      [jobs[0].aggregated_location_id]
+    );
+
+    // Delete the assignment
+    await db.promise().query(
+      "DELETE FROM work_assignments WHERE id = ?",
+      [jobId]
+    );
+
+    console.log(`Job ${jobId} rejected by contractor. Reason: ${reason || 'No reason provided'}`);
+
+    res.json({ message: "Job rejected successfully" });
+  } catch (error) {
+    console.error("Reject job error:", error);
+    res.status(500).json({ message: "Failed to reject job", error: error.message });
   }
 };
 
