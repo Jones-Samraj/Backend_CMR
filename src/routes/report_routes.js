@@ -30,8 +30,9 @@ router.patch("/assignments/:assignmentId", reportController.updateWorkAssignment
 router.get("/history/verified", reportController.getVerifiedHistory);
 
 // Verify location (public - for dashboard without auth)
-router.post("/verify/:locationId", reportController.verifyLocation);
+// IMPORTANT: batch route must come BEFORE :locationId route
 router.post("/verify/batch", reportController.batchVerifyLocations);
+router.post("/verify/:locationId", reportController.verifyLocation);
 
 // Update report status (admin)
 router.patch("/:reportId/status", auth, reportController.updateReportStatus);

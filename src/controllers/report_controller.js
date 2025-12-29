@@ -48,6 +48,44 @@ const toMySQLDatetime = (isoString) => {
   return date.toISOString().slice(0, 19).replace('T', ' ');
 };
 
+// Helper: format a JS Date (or ISO string) as MySQL DATE (YYYY-MM-DD)
+const toMySQLDate = (value) => {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+};
+
+const isWeekend = (d) => {
+  const day = d.getDay();
+  return day === 0 || day === 6;
+};
+
+// Adds business days (Mon-Fri) to a date.
+const addBusinessDays = (startDate, businessDays) => {
+  const result = new Date(startDate.getTime());
+  const n = Number(businessDays);
+  if (!Number.isFinite(n) || n <= 0) return result;
+  let added = 0;
+  while (added < n) {
+    result.setDate(result.getDate() + 1);
+    if (!isWeekend(result)) added += 1;
+  }
+  return result;
+};
+
+const SLA_BUSINESS_DAYS_BY_SEVERITY = {
+  High: 3,
+  Medium: 5,
+  Low: 7,
+};
+
+const computeDueDateForSeverity = (severity, fromDate = new Date()) => {
+  const sev = (severity || 'Low').toString();
+  const days = SLA_BUSINESS_DAYS_BY_SEVERITY[sev] ?? SLA_BUSINESS_DAYS_BY_SEVERITY.Low;
+  return addBusinessDays(fromDate, days);
+};
+
 /**
  * Submit a new road audit report from mobile app
  * Handles the JSON structure from pothole_user app
@@ -461,7 +499,7 @@ exports.createWorkAssignment = async (req, res) => {
       return res.status(400).json({ message: "locationId and contractorId are required" });
     }
 
-    // Validate location exists + fetch severity
+    // Validate location exists
     const [locations] = await db.promise().query(
       "SELECT id, highest_severity FROM aggregated_locations WHERE id = ?",
       [locationId]
@@ -481,10 +519,6 @@ exports.createWorkAssignment = async (req, res) => {
       return res.status(404).json({ message: "Contractor not found or inactive" });
     }
 
-    const severity = normalizeSeverity(locations[0]?.highest_severity);
-    const dueDays = DUE_DAYS_BY_SEVERITY[severity] ?? DUE_DAYS_BY_SEVERITY.Low;
-    const dueDate = toMySQLDate(addBusinessDaysUtc(new Date(), dueDays));
-
     // Check if assignment already exists
     const [existing] = await db.promise().query(
       "SELECT id FROM work_assignments WHERE aggregated_location_id = ? AND status NOT IN ('completed', 'verified')",
@@ -497,7 +531,7 @@ exports.createWorkAssignment = async (req, res) => {
         `UPDATE work_assignments 
          SET contractor_id = ?, assigned_at = NOW(), due_date = ?, notes = ?, status = 'assigned', completed_at = NULL
          WHERE id = ?`,
-        [contractorId, dueDate || null, notes || null, existing[0].id]
+        [contractorId, computedDueDate, notes || null, existing[0].id]
       );
 
       // Update location status
@@ -508,9 +542,7 @@ exports.createWorkAssignment = async (req, res) => {
 
       return res.json({
         message: "Assignment updated successfully",
-        assignmentId: existing[0].id,
-        dueDate,
-        severity
+        assignmentId: existing[0].id
       });
     }
 
@@ -518,7 +550,7 @@ exports.createWorkAssignment = async (req, res) => {
     const [result] = await db.promise().query(
       `INSERT INTO work_assignments (aggregated_location_id, contractor_id, due_date, notes)
        VALUES (?, ?, ?, ?)`,
-      [locationId, contractorId, dueDate || null, notes || null]
+      [locationId, contractorId, computedDueDate, notes || null]
     );
 
     // Update location status
@@ -529,9 +561,7 @@ exports.createWorkAssignment = async (req, res) => {
 
     res.status(201).json({
       message: "Assignment created successfully",
-      assignmentId: result.insertId,
-      dueDate,
-      severity
+      assignmentId: result.insertId
     });
   } catch (error) {
     console.error("Create work assignment error:", error);
