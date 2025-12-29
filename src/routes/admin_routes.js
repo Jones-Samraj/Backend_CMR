@@ -2,6 +2,8 @@ const router = require("express").Router();
 const auth = require("../middlewares/authMiddleware");
 const role = require("../middlewares/roleMiddleware");
 const controller = require("../controllers/admin_controller");
+const firebaseSync = require("../controllers/firebase_sync_controller");
+const firebaseReadingsSync = require("../controllers/firebase_readings_sync_controller");
 
 // Dashboard
 router.get("/dashboard", auth, role("admin"), controller.dashboard);
@@ -35,5 +37,21 @@ router.get("/map/points", auth, role("admin"), controller.getMapPoints);
 
 // History
 router.get("/history", auth, role("admin"), controller.getHistory);
+
+// Firebase sync (admin only)
+router.post(
+	"/firebase/sync-reports",
+	auth,
+	role("admin"),
+	firebaseSync.syncReportsFromFirebase
+);
+
+// Firebase readings -> aggregated_locations (admin only)
+router.post(
+	"/firebase/sync-readings",
+	auth,
+	role("admin"),
+	firebaseReadingsSync.syncReadingsToAggregatedLocations
+);
 
 module.exports = router;

@@ -1,4 +1,45 @@
 const db = require("../config/db");
+const reportIngestionService = require("../services/report_ingestion_service");
+
+const DUE_DAYS_BY_SEVERITY = {
+  High: 3,
+  Medium: 5,
+  Low: 7,
+};
+
+function normalizeSeverity(severity) {
+  const s = String(severity || "").trim();
+  if (s === "High" || s === "Medium" || s === "Low") return s;
+  return "Low";
+}
+
+function isWeekendUtc(date) {
+  const day = date.getUTCDay();
+  return day === 0 || day === 6;
+}
+
+function addBusinessDaysUtc(startDate, businessDays) {
+  const d = new Date(startDate);
+  d.setUTCHours(0, 0, 0, 0);
+
+  const daysToAdd = Number(businessDays);
+  if (!Number.isFinite(daysToAdd) || daysToAdd <= 0) return d;
+
+  let added = 0;
+  while (added < daysToAdd) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    if (!isWeekendUtc(d)) added += 1;
+  }
+  return d;
+}
+
+function toMySQLDate(date) {
+  if (!date) return null;
+  const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return null;
+  // YYYY-MM-DD
+  return d.toISOString().slice(0, 10);
+}
 
 // Helper function to convert ISO datetime to MySQL format
 const toMySQLDatetime = (isoString) => {
@@ -38,78 +79,10 @@ exports.submitReport = async (req, res) => {
       if (users.length > 0) userId = users[0].id;
     }
 
-    // Calculate totals
-    const potholes = anomalies.filter(a => a.type === "pothole");
-    const patchyRoads = anomalies.filter(a => a.type === "road_anomaly");
-    
-    // Calculate health score (100 - penalties)
-    const penalty = (potholes.length * 15) + (patchyRoads.length * 5);
-    const healthScore = Math.max(0, 100 - penalty);
-
-    // Insert main report
-    const [reportResult] = await connection.query(
-      `INSERT INTO reports (report_id, user_id, device_id, reported_at, total_potholes, total_patchy_roads, health_score, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [
-        report_id,
-        userId,
-        device_id,
-        toMySQLDatetime(reported_at),
-        potholes.length,
-        patchyRoads.length,
-        healthScore
-      ]
+    const ingestResult = await reportIngestionService.ingestReportWithinTransaction(
+      connection,
+      { report_id, device_id, reported_at, anomalies, userId }
     );
-
-    const dbReportId = reportResult.insertId;
-
-    // Insert pothole detections
-    for (const pothole of potholes) {
-      await connection.query(
-        `INSERT INTO pothole_detections 
-         (report_id, location_id, latitude, longitude, severity, timestamp, synced)
-         VALUES (?, ?, ?, ?, ?, ?, TRUE)`,
-        [
-          dbReportId,
-          pothole.location_id,
-          pothole.latitude,
-          pothole.longitude,
-          pothole.severity || "Medium",
-          toMySQLDatetime(pothole.timestamp)
-        ]
-      );
-
-      // Update aggregated locations
-      await updateAggregatedLocation(connection, pothole, "pothole");
-    }
-
-    // Insert road anomalies (patchy roads)
-    for (const patchy of patchyRoads) {
-      await connection.query(
-        `INSERT INTO road_anomalies 
-         (report_id, location_id, start_latitude, start_longitude, end_latitude, end_longitude, severity, start_timestamp, end_timestamp, duration_seconds)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          dbReportId,
-          patchy.location_id,
-          patchy.start_latitude || patchy.latitude,
-          patchy.start_longitude || patchy.longitude,
-          patchy.end_latitude,
-          patchy.end_longitude,
-          patchy.severity || "Medium",
-          toMySQLDatetime(patchy.start_timestamp),
-          toMySQLDatetime(patchy.end_timestamp),
-          patchy.duration_seconds
-        ]
-      );
-
-      // Update aggregated locations
-      await updateAggregatedLocation(connection, {
-        latitude: patchy.start_latitude || patchy.latitude,
-        longitude: patchy.start_longitude || patchy.longitude,
-        severity: patchy.severity
-      }, "patchy");
-    }
 
     await connection.commit();
 
@@ -117,12 +90,7 @@ exports.submitReport = async (req, res) => {
       success: true,
       message: "Report submitted successfully",
       data: {
-        reportId: report_id,
-        dbId: dbReportId,
-        totalPotholes: potholes.length,
-        totalPatchy: patchyRoads.length,
-        healthScore: healthScore,
-        status: "pending"
+        ...ingestResult
       }
     });
 
@@ -146,61 +114,6 @@ exports.submitReport = async (req, res) => {
     connection.release();
   }
 };
-
-/**
- * Helper function to update aggregated locations
- */
-async function updateAggregatedLocation(connection, data, type) {
-  const lat = parseFloat(data.latitude).toFixed(4);
-  const lng = parseFloat(data.longitude).toFixed(4);
-  const gridId = `${lat}_${lng}`;
-  
-  const severityOrder = { "Low": 1, "Medium": 2, "High": 3 };
-  const severity = data.severity || "Medium";
-
-  // Check if grid exists
-  const [existing] = await connection.query(
-    "SELECT * FROM aggregated_locations WHERE grid_id = ?",
-    [gridId]
-  );
-
-  if (existing.length > 0) {
-    const current = existing[0];
-    const newHighest = severityOrder[severity] > severityOrder[current.highest_severity] 
-      ? severity 
-      : current.highest_severity;
-
-    await connection.query(
-      `UPDATE aggregated_locations 
-       SET total_potholes = total_potholes + ?,
-           total_patchy = total_patchy + ?,
-           highest_severity = ?,
-           report_count = report_count + 1,
-           last_reported_at = NOW()
-       WHERE grid_id = ?`,
-      [
-        type === "pothole" ? 1 : 0,
-        type === "patchy" ? 1 : 0,
-        newHighest,
-        gridId
-      ]
-    );
-  } else {
-    await connection.query(
-      `INSERT INTO aggregated_locations 
-       (grid_id, latitude, longitude, total_potholes, total_patchy, highest_severity, first_reported_at, last_reported_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-      [
-        gridId,
-        lat,
-        lng,
-        type === "pothole" ? 1 : 0,
-        type === "patchy" ? 1 : 0,
-        severity
-      ]
-    );
-  }
-}
 
 /**
  * Get all reports with pagination
@@ -542,15 +455,15 @@ exports.getWorkAssignments = async (req, res) => {
  */
 exports.createWorkAssignment = async (req, res) => {
   try {
-    const { locationId, contractorId, dueDate, notes } = req.body;
+    const { locationId, contractorId, notes } = req.body;
 
     if (!locationId || !contractorId) {
       return res.status(400).json({ message: "locationId and contractorId are required" });
     }
 
-    // Validate location exists
+    // Validate location exists + fetch severity
     const [locations] = await db.promise().query(
-      "SELECT id FROM aggregated_locations WHERE id = ?",
+      "SELECT id, highest_severity FROM aggregated_locations WHERE id = ?",
       [locationId]
     );
 
@@ -568,6 +481,10 @@ exports.createWorkAssignment = async (req, res) => {
       return res.status(404).json({ message: "Contractor not found or inactive" });
     }
 
+    const severity = normalizeSeverity(locations[0]?.highest_severity);
+    const dueDays = DUE_DAYS_BY_SEVERITY[severity] ?? DUE_DAYS_BY_SEVERITY.Low;
+    const dueDate = toMySQLDate(addBusinessDaysUtc(new Date(), dueDays));
+
     // Check if assignment already exists
     const [existing] = await db.promise().query(
       "SELECT id FROM work_assignments WHERE aggregated_location_id = ? AND status NOT IN ('completed', 'verified')",
@@ -578,7 +495,7 @@ exports.createWorkAssignment = async (req, res) => {
       // Update existing assignment
       await db.promise().query(
         `UPDATE work_assignments 
-         SET contractor_id = ?, due_date = ?, notes = ?, status = 'assigned'
+         SET contractor_id = ?, assigned_at = NOW(), due_date = ?, notes = ?, status = 'assigned', completed_at = NULL
          WHERE id = ?`,
         [contractorId, dueDate || null, notes || null, existing[0].id]
       );
@@ -591,7 +508,9 @@ exports.createWorkAssignment = async (req, res) => {
 
       return res.json({
         message: "Assignment updated successfully",
-        assignmentId: existing[0].id
+        assignmentId: existing[0].id,
+        dueDate,
+        severity
       });
     }
 
@@ -610,7 +529,9 @@ exports.createWorkAssignment = async (req, res) => {
 
     res.status(201).json({
       message: "Assignment created successfully",
-      assignmentId: result.insertId
+      assignmentId: result.insertId,
+      dueDate,
+      severity
     });
   } catch (error) {
     console.error("Create work assignment error:", error);
