@@ -4,6 +4,7 @@ const role = require("../middlewares/roleMiddleware");
 const controller = require("../controllers/admin_controller");
 const firebaseSync = require("../controllers/firebase_sync_controller");
 const firebaseReadingsSync = require("../controllers/firebase_readings_sync_controller");
+const firebaseFlagsSync = require("../controllers/firebase_flags_sync_controller");
 
 // Dashboard
 router.get("/dashboard", auth, role("admin"), controller.dashboard);
@@ -52,6 +53,14 @@ router.post(
 	auth,
 	role("admin"),
 	firebaseReadingsSync.syncReadingsToAggregatedLocations
+);
+
+// Firebase flagged readings (using patchyFlag/potholeFlag) -> aggregated_locations (admin only)
+router.post(
+    "/firebase/sync-flags",
+    auth,
+    role("admin"),
+    firebaseFlagsSync.syncFlaggedReadingsToAggregatedLocations
 );
 
 module.exports = router;

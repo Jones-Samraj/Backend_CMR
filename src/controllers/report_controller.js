@@ -1,46 +1,6 @@
 const db = require("../config/db");
 const reportIngestionService = require("../services/report_ingestion_service");
 
-const DUE_DAYS_BY_SEVERITY = {
-  High: 3,
-  Medium: 5,
-  Low: 7,
-};
-
-function normalizeSeverity(severity) {
-  const s = String(severity || "").trim();
-  if (s === "High" || s === "Medium" || s === "Low") return s;
-  return "Low";
-}
-
-function isWeekendUtc(date) {
-  const day = date.getUTCDay();
-  return day === 0 || day === 6;
-}
-
-function addBusinessDaysUtc(startDate, businessDays) {
-  const d = new Date(startDate);
-  d.setUTCHours(0, 0, 0, 0);
-
-  const daysToAdd = Number(businessDays);
-  if (!Number.isFinite(daysToAdd) || daysToAdd <= 0) return d;
-
-  let added = 0;
-  while (added < daysToAdd) {
-    d.setUTCDate(d.getUTCDate() + 1);
-    if (!isWeekendUtc(d)) added += 1;
-  }
-  return d;
-}
-
-function toMySQLDate(date) {
-  if (!date) return null;
-  const d = new Date(date);
-  if (Number.isNaN(d.getTime())) return null;
-  // YYYY-MM-DD
-  return d.toISOString().slice(0, 10);
-}
-
 // Helper function to convert ISO datetime to MySQL format
 const toMySQLDatetime = (isoString) => {
   if (!isoString) return new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -519,6 +479,10 @@ exports.createWorkAssignment = async (req, res) => {
       return res.status(404).json({ message: "Contractor not found or inactive" });
     }
 
+    const severity = (locations[0]?.highest_severity || 'Low').toString();
+    const assignedAt = new Date();
+    const computedDueDate = toMySQLDate(computeDueDateForSeverity(severity, assignedAt));
+
     // Check if assignment already exists
     const [existing] = await db.promise().query(
       "SELECT id FROM work_assignments WHERE aggregated_location_id = ? AND status NOT IN ('completed', 'verified')",
@@ -529,9 +493,15 @@ exports.createWorkAssignment = async (req, res) => {
       // Update existing assignment
       await db.promise().query(
         `UPDATE work_assignments 
-         SET contractor_id = ?, assigned_at = NOW(), due_date = ?, notes = ?, status = 'assigned', completed_at = NULL
+         SET contractor_id = ?, assigned_at = ?, due_date = ?, notes = ?, status = 'assigned', completed_at = NULL
          WHERE id = ?`,
-        [contractorId, computedDueDate, notes || null, existing[0].id]
+        [
+          contractorId,
+          toMySQLDatetime(assignedAt.toISOString()),
+          computedDueDate,
+          notes || null,
+          existing[0].id,
+        ]
       );
 
       // Update location status
@@ -542,15 +512,24 @@ exports.createWorkAssignment = async (req, res) => {
 
       return res.json({
         message: "Assignment updated successfully",
-        assignmentId: existing[0].id
+        assignmentId: existing[0].id,
+        assignedAt: assignedAt.toISOString(),
+        dueDate: computedDueDate,
+        severity,
       });
     }
 
     // Create new assignment
     const [result] = await db.promise().query(
-      `INSERT INTO work_assignments (aggregated_location_id, contractor_id, due_date, notes)
-       VALUES (?, ?, ?, ?)`,
-      [locationId, contractorId, computedDueDate, notes || null]
+      `INSERT INTO work_assignments (aggregated_location_id, contractor_id, assigned_at, due_date, notes)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        locationId,
+        contractorId,
+        toMySQLDatetime(assignedAt.toISOString()),
+        computedDueDate,
+        notes || null,
+      ]
     );
 
     // Update location status
@@ -561,7 +540,10 @@ exports.createWorkAssignment = async (req, res) => {
 
     res.status(201).json({
       message: "Assignment created successfully",
-      assignmentId: result.insertId
+      assignmentId: result.insertId,
+      assignedAt: assignedAt.toISOString(),
+      dueDate: computedDueDate,
+      severity,
     });
   } catch (error) {
     console.error("Create work assignment error:", error);

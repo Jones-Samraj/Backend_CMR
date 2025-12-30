@@ -67,9 +67,16 @@ async function upsertAggregatedLocationEvent(connection, event) {
   const lngRaw = Number(event.longitude);
   const timestampMs = normalizeUnixMs(event.timestampMs ?? event.timestamp ?? event.time);
 
-  const lat = parseFloat(latRaw).toFixed(4);
-  const lng = parseFloat(lngRaw).toFixed(4);
-  const gridId = `${lat}_${lng}`;
+  // Use rounded coordinates only for grid bucketing (grid_id),
+  // but store exact lat/lng values in the table columns.
+  const gridLat = Number.isFinite(latRaw) ? latRaw.toFixed(4) : null;
+  const gridLng = Number.isFinite(lngRaw) ? lngRaw.toFixed(4) : null;
+
+  if (gridLat === null || gridLng === null) {
+    throw new Error("Invalid latitude/longitude for aggregated event");
+  }
+
+  const gridId = `${gridLat}_${gridLng}`;
 
   const severity = event.severity || "Low";
 
@@ -122,7 +129,7 @@ async function upsertAggregatedLocationEvent(connection, event) {
       `INSERT INTO aggregated_locations 
        (grid_id, latitude, longitude, total_potholes, total_patchy, highest_severity, report_count, first_reported_at, last_reported_at)
        VALUES (?, ?, ?, ?, ?, ?, 1, FROM_UNIXTIME(?), FROM_UNIXTIME(?))`,
-      [gridId, lat, lng, potholeInc, patchyInc, severity, tsSqlSeconds, tsSqlSeconds]
+      [gridId, latRaw, lngRaw, potholeInc, patchyInc, severity, tsSqlSeconds, tsSqlSeconds]
     );
 
     return { gridId, created: true, aggregatedLocationId: result.insertId, highestSeverity: severity };
@@ -132,7 +139,7 @@ async function upsertAggregatedLocationEvent(connection, event) {
     `INSERT INTO aggregated_locations 
      (grid_id, latitude, longitude, total_potholes, total_patchy, highest_severity, report_count, first_reported_at, last_reported_at)
      VALUES (?, ?, ?, ?, ?, ?, 1, NOW(), NOW())`,
-    [gridId, lat, lng, potholeInc, patchyInc, severity]
+    [gridId, latRaw, lngRaw, potholeInc, patchyInc, severity]
   );
 
   return { gridId, created: true, aggregatedLocationId: result.insertId, highestSeverity: severity };
