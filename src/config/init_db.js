@@ -164,6 +164,8 @@ const initDatabase = async () => {
       assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       due_date DATE,
       status ENUM('assigned', 'in_progress', 'pending_verification', 'completed', 'verified') DEFAULT 'assigned',
+      pre_work_photo_url VARCHAR(1024),
+      post_work_photo_url VARCHAR(1024),
       completed_at TIMESTAMP,
       admin_notes TEXT,
       notes TEXT,

@@ -250,12 +250,20 @@ exports.getAggregatedLocations = async (req, res) => {
         wa.contractor_id,
         wa.status as assignment_status,
         wa.due_date,
+        wa.pre_work_photo_url,
+        wa.post_work_photo_url,
         wa.assigned_at,
         c.company_name as contractor_name,
         c.contact_email as contractor_email
       FROM aggregated_locations al
-      LEFT JOIN work_assignments wa ON wa.aggregated_location_id = al.id 
-        AND wa.status NOT IN ('completed', 'verified')
+      LEFT JOIN work_assignments wa ON wa.id = (
+        SELECT wa2.id
+        FROM work_assignments wa2
+        WHERE wa2.aggregated_location_id = al.id
+          AND wa2.status != 'verified'
+        ORDER BY wa2.id DESC
+        LIMIT 1
+      )
       LEFT JOIN contractors c ON wa.contractor_id = c.id
       WHERE 1=1
     `;

@@ -87,6 +87,55 @@ exports.updateJobStatus = async (req, res) => {
   }
 };
 
+// Upload and persist pre/post work photo URL
+exports.uploadJobPhoto = async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const photoType = String(req.body?.photoType || '').toLowerCase();
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No photo uploaded' });
+    }
+
+    const normalizedType = photoType === 'post' ? 'post' : 'pre';
+    const column = normalizedType === 'post' ? 'post_work_photo_url' : 'pre_work_photo_url';
+
+    // Verify contractor owns this job
+    const [contractors] = await db.promise().query(
+      'SELECT id FROM contractors WHERE user_id = ?',
+      [req.user.id]
+    );
+
+    if (contractors.length === 0) {
+      return res.status(404).json({ message: 'Contractor profile not found' });
+    }
+
+    const [jobs] = await db.promise().query(
+      'SELECT * FROM work_assignments WHERE id = ? AND contractor_id = ?',
+      [jobId, contractors[0].id]
+    );
+
+    if (jobs.length === 0) {
+      return res.status(404).json({ message: 'Job not found' });
+    }
+
+    // Build an absolute URL for the uploaded file
+    const host = req.get('host');
+    const protocol = req.protocol;
+    const fileUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
+
+    await db.promise().query(
+      `UPDATE work_assignments SET ${column} = ? WHERE id = ?`,
+      [fileUrl, jobId]
+    );
+
+    res.json({ success: true, photoType: normalizedType, photoUrl: fileUrl });
+  } catch (error) {
+    console.error('Upload job photo error:', error);
+    res.status(500).json({ message: 'Failed to upload photo', error: error.message });
+  }
+};
+
 // Reject/delete a job assignment
 exports.rejectJob = async (req, res) => {
   try {
