@@ -4,7 +4,7 @@
   "description": "Backend API for Pothole Detection System",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "nodemon src/server.js",
     "dev": "nodemon src/server.js",
     "db:init": "node src/config/init_db.js",
     "firebase:readings:tail5": "node src/scripts/print_firebase_readings_5.js --limit=5",

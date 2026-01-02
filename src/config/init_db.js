@@ -168,6 +168,7 @@ const initDatabase = async () => {
       post_work_photo_url VARCHAR(1024),
       completed_at TIMESTAMP,
       admin_notes TEXT,
+      remarks TEXT,
       notes TEXT,
       FOREIGN KEY (aggregated_location_id) REFERENCES aggregated_locations(id) ON DELETE CASCADE,
       FOREIGN KEY (contractor_id) REFERENCES contractors(id) ON DELETE CASCADE,

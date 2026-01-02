@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { toPublicPhotoUrl } = require('../utils/photoUrl');
 
 // Get contractor's assigned jobs
 exports.jobs = async (req, res) => {
@@ -25,7 +26,13 @@ exports.jobs = async (req, res) => {
       [contractorId]
     );
 
-    res.json({ jobs });
+    const mappedJobs = jobs.map((job) => ({
+      ...job,
+      pre_work_photo_url: toPublicPhotoUrl(req, job.pre_work_photo_url),
+      post_work_photo_url: toPublicPhotoUrl(req, job.post_work_photo_url),
+    }));
+
+    res.json({ jobs: mappedJobs });
   } catch (error) {
     console.error("Get jobs error:", error);
     res.status(500).json({ message: "Failed to get jobs", error: error.message });
@@ -38,8 +45,16 @@ exports.updateJobStatus = async (req, res) => {
     const { jobId } = req.params;
     const { status, notes } = req.body;
 
-    const validStatuses = ["assigned", "in_progress", "completed", "verified"];
-    if (!validStatuses.includes(status)) {
+    // Contractors should not be able to mark work as "completed" directly.
+    // "completed" is reserved for admin-side flows / legacy usage.
+    // When a contractor finishes work, we store it as pending_verification.
+    const normalizedRequestedStatus = String(status || '').toLowerCase();
+    const statusToPersist = normalizedRequestedStatus === 'completed'
+      ? 'pending_verification'
+      : normalizedRequestedStatus;
+
+    const validStatuses = ["assigned", "in_progress", "pending_verification", "completed", "verified"];
+    if (!validStatuses.includes(statusToPersist)) {
       return res.status(400).json({ message: "Invalid status" });
     }
 
@@ -63,24 +78,35 @@ exports.updateJobStatus = async (req, res) => {
     }
 
     // Update job
-    const completionDate = status === "completed" ? new Date() : null;
+    const completionDate = (statusToPersist === "completed" || statusToPersist === "pending_verification") ? new Date() : null;
 
     await db.promise().query(
       `UPDATE work_assignments 
-       SET status = ?, notes = CONCAT(COALESCE(notes, ''), '\n', ?), completion_date = ?
+       SET status = ?,
+           notes = CONCAT(COALESCE(notes, ''), '\n', ?),
+           completion_date = ?,
+           remarks = CASE WHEN ? = 'pending_verification' THEN NULL ELSE remarks END
        WHERE id = ?`,
-      [status, notes || "", completionDate, jobId]
+      [statusToPersist, notes || "", completionDate, statusToPersist, jobId]
     );
 
-    // If completed, update aggregated location
-    if (status === "completed") {
+    // If pending_verification (contractor finished), update aggregated location to pending_verification
+    if (statusToPersist === "pending_verification") {
+      await db.promise().query(
+        "UPDATE aggregated_locations SET status = 'pending_verification' WHERE id = ?",
+        [jobs[0].aggregated_location_id]
+      );
+    }
+
+    // If completed/verified by admin, mark as fixed
+    if (statusToPersist === "completed" || statusToPersist === "verified") {
       await db.promise().query(
         "UPDATE aggregated_locations SET status = 'fixed' WHERE id = ?",
         [jobs[0].aggregated_location_id]
       );
     }
 
-    res.json({ success: true, message: "Job status updated successfully" });
+    res.json({ success: true, message: "Job status updated successfully", status: statusToPersist });
   } catch (error) {
     console.error("Update job error:", error);
     res.status(500).json({ message: "Failed to update job", error: error.message });
@@ -119,17 +145,20 @@ exports.uploadJobPhoto = async (req, res) => {
       return res.status(404).json({ message: 'Job not found' });
     }
 
-    // Build an absolute URL for the uploaded file
-    const host = req.get('host');
-    const protocol = req.protocol;
-    const fileUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
+    // Store ONLY the filename in DB; generate URL dynamically for clients
+    const filename = req.file.filename;
 
     await db.promise().query(
       `UPDATE work_assignments SET ${column} = ? WHERE id = ?`,
-      [fileUrl, jobId]
+      [filename, jobId]
     );
 
-    res.json({ success: true, photoType: normalizedType, photoUrl: fileUrl });
+    res.json({
+      success: true,
+      photoType: normalizedType,
+      photoFilename: filename,
+      photoUrl: toPublicPhotoUrl(req, filename),
+    });
   } catch (error) {
     console.error('Upload job photo error:', error);
     res.status(500).json({ message: 'Failed to upload photo', error: error.message });

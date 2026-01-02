@@ -33,6 +33,7 @@ router.get("/history/verified", reportController.getVerifiedHistory);
 // IMPORTANT: batch route must come BEFORE :locationId route
 router.post("/verify/batch", reportController.batchVerifyLocations);
 router.post("/verify/:locationId", reportController.verifyLocation);
+router.post("/verify/:locationId/reject", reportController.rejectLocationVerification);
 
 // Update report status (admin)
 router.patch("/:reportId/status", auth, reportController.updateReportStatus);

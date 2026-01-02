@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { toPublicPhotoUrl } = require('../utils/photoUrl');
 
 // Helper function to convert ISO datetime to MySQL format
 const toMySQLDatetime = (isoString) => {
@@ -392,19 +393,25 @@ exports.batchVerify = async (req, res) => {
 exports.rejectVerification = async (req, res) => {
   try {
     const { locationId } = req.params;
-    const { reason } = req.body;
+    const { reason, remarks } = req.body;
+
+    const remarkText = (remarks ?? reason ?? '').toString();
 
     // Update assignment status back to in_progress
-    await db.promise().query(
+    const [assignmentResult] = await db.promise().query(
       `UPDATE work_assignments 
-       SET status = 'in_progress', admin_notes = ?
+       SET status = 'in_progress', completed_at = NULL, remarks = ?
        WHERE aggregated_location_id = ? AND status = 'pending_verification'`,
-      [reason, locationId]
+      [remarkText || null, locationId]
     );
+
+    if (assignmentResult.affectedRows === 0) {
+      return res.status(404).json({ message: 'No pending verification assignment found for this location' });
+    }
 
     // Update location status
     await db.promise().query(
-      "UPDATE aggregated_locations SET status = 'assigned' WHERE id = ?",
+      "UPDATE aggregated_locations SET status = 'in_progress' WHERE id = ?",
       [locationId]
     );
 
@@ -447,7 +454,13 @@ exports.getAssignments = async (req, res) => {
       params
     );
 
-    res.json({ assignments });
+    const mappedAssignments = assignments.map((a) => ({
+      ...a,
+      pre_work_photo_url: toPublicPhotoUrl(req, a.pre_work_photo_url),
+      post_work_photo_url: toPublicPhotoUrl(req, a.post_work_photo_url),
+    }));
+
+    res.json({ assignments: mappedAssignments });
   } catch (error) {
     console.error("Get assignments error:", error);
     res.status(500).json({ message: "Failed to get assignments", error: error.message });

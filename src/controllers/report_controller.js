@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { toPublicPhotoUrl } = require('../utils/photoUrl');
 const reportIngestionService = require("../services/report_ingestion_service");
 
 // Helper function to convert ISO datetime to MySQL format
@@ -288,7 +289,13 @@ exports.getAggregatedLocations = async (req, res) => {
 
     const [locations] = await db.promise().query(query, params);
 
-    res.json({ locations, count: locations.length });
+    const mappedLocations = locations.map((loc) => ({
+      ...loc,
+      pre_work_photo_url: toPublicPhotoUrl(req, loc.pre_work_photo_url),
+      post_work_photo_url: toPublicPhotoUrl(req, loc.post_work_photo_url),
+    }));
+
+    res.json({ locations: mappedLocations, count: mappedLocations.length });
   } catch (error) {
     console.error("Get aggregated locations error:", error);
     res.status(500).json({ message: "Failed to get locations", error: error.message });
@@ -771,5 +778,42 @@ exports.batchVerifyLocations = async (req, res) => {
     res.status(500).json({ message: "Failed to batch verify", error: error.message });
   } finally {
     connection.release();
+  }
+};
+
+/**
+ * Reject work completion (public endpoint for dashboard)
+ * Stores admin remarks and sends the job back to contractor as in_progress.
+ */
+exports.rejectLocationVerification = async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const { remarks, reason } = req.body || {};
+    const remarkText = (remarks ?? reason ?? '').toString();
+
+    const [assignmentResult] = await db.promise().query(
+      `UPDATE work_assignments
+       SET status = 'in_progress', completed_at = NULL, remarks = ?
+       WHERE aggregated_location_id = ? AND status = 'pending_verification'`,
+      [remarkText || null, locationId]
+    );
+
+    if (assignmentResult.affectedRows === 0) {
+      return res.status(404).json({ message: 'No pending verification assignment found for this location' });
+    }
+
+    const [locationResult] = await db.promise().query(
+      "UPDATE aggregated_locations SET status = 'in_progress' WHERE id = ?",
+      [locationId]
+    );
+
+    res.json({
+      message: 'Verification rejected, sent back to contractor',
+      locationUpdated: locationResult.affectedRows > 0,
+      assignmentUpdated: assignmentResult.affectedRows > 0,
+    });
+  } catch (error) {
+    console.error('Reject location verification error:', error);
+    res.status(500).json({ message: 'Failed to reject verification', error: error.message });
   }
 };
